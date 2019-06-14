@@ -17,13 +17,15 @@ using namespace winrt::Windows::Storage;
 using namespace winrt::Windows::Storage::Streams;
 using namespace ::Microsoft::Console;
 
-static constexpr std::wstring_view FILENAME { L"profiles.json" };
+static constexpr std::wstring_view FILENAME{ L"profiles.json" };
 static constexpr std::wstring_view SETTINGS_FOLDER_NAME{ L"\\Microsoft\\Windows Terminal\\" };
 
 static constexpr std::string_view ProfilesKey{ "profiles" };
 static constexpr std::string_view KeybindingsKey{ "keybindings" };
 static constexpr std::string_view GlobalsKey{ "globals" };
 static constexpr std::string_view SchemesKey{ "schemes" };
+
+static constexpr std::string_view Utf8Bom{ u8"\uFEFF" };
 
 // Method Description:
 // - Creates a CascadiaSettings from whatever's saved on disk, or instantiates
@@ -40,19 +42,27 @@ std::unique_ptr<CascadiaSettings> CascadiaSettings::LoadAll(const bool saveOnLoa
 {
     std::unique_ptr<CascadiaSettings> resultPtr;
     std::optional<std::string> fileData = _IsPackaged() ?
-                                          _LoadAsPackagedApp() : _LoadAsUnpackagedApp();
+                                              _LoadAsPackagedApp() :
+                                              _LoadAsUnpackagedApp();
 
     const bool foundFile = fileData.has_value();
     if (foundFile)
     {
         const auto actualData = fileData.value();
 
+        // Ignore UTF-8 BOM
+        auto actualDataStart = actualData.c_str();
+        if (actualData.compare(0, Utf8Bom.size(), Utf8Bom) == 0)
+        {
+            actualDataStart += Utf8Bom.size();
+        }
+
         // Parse the json data.
         Json::Value root;
         std::unique_ptr<Json::CharReader> reader{ Json::CharReaderBuilder::CharReaderBuilder().newCharReader() };
         std::string errs; // This string will recieve any error text from failing to parse.
         // `parse` will return false if it fails.
-        if (!reader->parse(actualData.c_str(), actualData.c_str() + actualData.size(), &root, &errs))
+        if (!reader->parse(actualDataStart, actualData.c_str() + actualData.size(), &root, &errs))
         {
             // TODO:GH#990 display this exception text to the user, in a
             //      copy-pasteable way.
@@ -339,7 +349,6 @@ std::optional<std::string> CascadiaSettings::_LoadAsPackagedApp()
     std::string resultString{ bytes.begin(), bytes.end() };
     return { resultString };
 }
-
 
 // Method Description:
 // - Reads the content in UTF-8 enconding of our settings file using the Win32 APIs

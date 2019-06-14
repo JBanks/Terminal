@@ -3,10 +3,7 @@
 
 #include "pch.h"
 #include "App.h"
-#include <shellapi.h>
-#include <filesystem>
 #include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
-#include <winrt/Windows.ApplicationModel.Resources.h>
 
 #include "App.g.cpp"
 
@@ -36,7 +33,6 @@ namespace winrt
 
 namespace winrt::TerminalApp::implementation
 {
-
     App::App() :
         App(winrt::TerminalApp::XamlMetaDataProvider())
     {
@@ -44,8 +40,8 @@ namespace winrt::TerminalApp::implementation
 
     App::App(Windows::UI::Xaml::Markup::IXamlMetadataProvider const& parentProvider) :
         base_type(parentProvider),
-        _settings{  },
-        _tabs{  },
+        _settings{},
+        _tabs{},
         _loadedInitialSettings{ false },
         _settingsLoadedResult{ S_OK },
         _dialogLock{}
@@ -138,7 +134,7 @@ namespace winrt::TerminalApp::implementation
         _newTabButton.HorizontalAlignment(HorizontalAlignment::Left);
 
         // When the new tab button is clicked, open the default profile
-        _newTabButton.Click([this](auto&&, auto&&){
+        _newTabButton.Click([this](auto&&, auto&&) {
             this->_OpenNewTab(std::nullopt);
         });
 
@@ -178,15 +174,18 @@ namespace winrt::TerminalApp::implementation
     }
 
     // Method Description:
-    // - Show a ContentDialog with a single "Ok" button to dismiss. Looks up the
-    //   the title and text from our Resources using the provided keys.
+    // - Show a ContentDialog with a single button to dismiss. Uses the
+    //   FrameworkElements provided as the title and content of this dialog, and
+    //   displays a single button to dismiss.
     // - Only one dialog can be visible at a time. If another dialog is visible
     //   when this is called, nothing happens.
     // Arguments:
-    // - titleKey: The key to use to lookup the title text from our resources.
-    // - contentKey: The key to use to lookup the content text from our resources.
-    fire_and_forget App::_ShowOkDialog(const winrt::hstring& titleKey,
-                                       const winrt::hstring& contentKey)
+    // - titleElement: the element to use as the title of this ContentDialog
+    // - contentElement: the element to use as the content of this ContentDialog
+    // - closeButtonText: The string to use on the close button
+    fire_and_forget App::_ShowDialog(const IInspectable& titleElement,
+                                     const IInspectable& contentElement,
+                                     const winrt::hstring& closeButtonText)
     {
         // DON'T release this lock in a wil::scope_exit. The scope_exit will get
         // called when we await, which is not what we want.
@@ -197,15 +196,10 @@ namespace winrt::TerminalApp::implementation
             return;
         }
 
-        auto resourceLoader = Windows::ApplicationModel::Resources::ResourceLoader::GetForCurrentView();
-        auto title = resourceLoader.GetString(titleKey);
-        auto message = resourceLoader.GetString(contentKey);
-        auto buttonText = resourceLoader.GetString(L"Ok");
-
         Controls::ContentDialog dialog;
-        dialog.Title(winrt::box_value(title));
-        dialog.Content(winrt::box_value(message));
-        dialog.CloseButtonText(buttonText);
+        dialog.Title(titleElement);
+        dialog.Content(contentElement);
+        dialog.CloseButtonText(closeButtonText);
 
         // IMPORTANT: Add the dialog to the _root UIElement before you show it,
         // so it knows how to attach to the XAML content.
@@ -216,6 +210,54 @@ namespace winrt::TerminalApp::implementation
 
         // After the dialog is dismissed, the dialog lock (held by `lock`) will
         // be released so another can be shown.
+    }
+
+    // Method Description:
+    // - Show a ContentDialog with a single "Ok" button to dismiss. Looks up the
+    //   the title and text from our Resources using the provided keys.
+    // - Only one dialog can be visible at a time. If another dialog is visible
+    //   when this is called, nothing happens. See _ShowDialog for details
+    // Arguments:
+    // - titleKey: The key to use to lookup the title text from our resources.
+    // - contentKey: The key to use to lookup the content text from our resources.
+    void App::_ShowOkDialog(const winrt::hstring& titleKey,
+                            const winrt::hstring& contentKey)
+    {
+        auto resourceLoader = Windows::ApplicationModel::Resources::ResourceLoader::GetForCurrentView();
+        auto title = resourceLoader.GetString(titleKey);
+        auto message = resourceLoader.GetString(contentKey);
+        auto buttonText = resourceLoader.GetString(L"Ok");
+
+        _ShowDialog(winrt::box_value(title), winrt::box_value(message), buttonText);
+    }
+
+    // Method Description:
+    // - Show a dialog with "About" information. Displays the app's Display
+    //   Name, and the version.
+    void App::_ShowAboutDialog()
+    {
+        auto resourceLoader = Windows::ApplicationModel::Resources::ResourceLoader::GetForCurrentView();
+        const auto title = resourceLoader.GetString(L"AboutTitleText");
+        const auto versionLabel = resourceLoader.GetString(L"VersionLabelText");
+        const auto package = winrt::Windows::ApplicationModel::Package::Current();
+        const auto packageName = package.DisplayName();
+        const auto version = package.Id().Version();
+        std::wstringstream aboutTextStream;
+
+        // Format our about text. It will look like the following:
+        // <Display Name>
+        // Version: <Major>.<Minor>.<Build>.<Revision>
+
+        aboutTextStream << packageName.c_str() << L"\n";
+
+        aboutTextStream << versionLabel.c_str() << L" ";
+        aboutTextStream << version.Major << L"." << version.Minor << L"." << version.Build << L"." << version.Revision;
+
+        winrt::hstring aboutText{ aboutTextStream.str() };
+
+        const auto buttonText = resourceLoader.GetString(L"Ok");
+
+        _ShowDialog(winrt::box_value(title), winrt::box_value(aboutText), buttonText);
     }
 
     // Method Description:
@@ -262,7 +304,6 @@ namespace winrt::TerminalApp::implementation
 
         return TermControl::GetProposedDimensions(settings, dpi);
     }
-
 
     bool App::GetShowTabsInTitlebar()
     {
@@ -322,7 +363,7 @@ namespace winrt::TerminalApp::implementation
                 profileMenuItem.FontWeight(FontWeights::Bold());
             }
 
-            profileMenuItem.Click([this, profileIndex](auto&&, auto&&){
+            profileMenuItem.Click([this, profileIndex](auto&&, auto&&) {
                 this->_OpenNewTab({ profileIndex });
             });
             newTabFlyout.Items().Append(profileMenuItem);
@@ -362,6 +403,17 @@ namespace winrt::TerminalApp::implementation
 
             feedbackFlyout.Click({ this, &App::_FeedbackButtonOnClick });
             newTabFlyout.Items().Append(feedbackFlyout);
+
+            // Create the about button.
+            auto aboutFlyout = Controls::MenuFlyoutItem{};
+            aboutFlyout.Text(L"About");
+
+            Controls::SymbolIcon aboutIco{};
+            aboutIco.Symbol(Controls::Symbol::Help);
+            aboutFlyout.Icon(aboutIco);
+
+            aboutFlyout.Click({ this, &App::_AboutButtonOnClick });
+            newTabFlyout.Items().Append(aboutFlyout);
         }
 
         _newTabButton.Flyout(newTabFlyout);
@@ -391,7 +443,7 @@ namespace winrt::TerminalApp::implementation
     // Return Value:
     // - <none>
     void App::_SettingsButtonOnClick(const IInspectable&,
-                                         const RoutedEventArgs&)
+                                     const RoutedEventArgs&)
     {
         LaunchSettings();
     }
@@ -403,6 +455,18 @@ namespace winrt::TerminalApp::implementation
                                      const RoutedEventArgs&)
     {
         winrt::Windows::System::Launcher::LaunchUriAsync({ L"https://github.com/microsoft/Terminal/issues" });
+    }
+
+    // Method Description:
+    // - Called when the about button is clicked. See _ShowAboutDialog for more info.
+    // Arguments:
+    // - <unused>
+    // Return Value:
+    // - <none>
+    void App::_AboutButtonOnClick(const IInspectable&,
+                                  const RoutedEventArgs&)
+    {
+        _ShowAboutDialog();
     }
 
     // Method Description:
@@ -440,8 +504,7 @@ namespace winrt::TerminalApp::implementation
     //   `CascadiaSettings::LoadAll` for details.
     // Return Value:
     // - S_OK if we successfully parsed the settings, otherwise an appropriate HRESULT.
-    [[nodiscard]]
-    HRESULT App::_TryLoadSettings(const bool saveOnLoad) noexcept
+    [[nodiscard]] HRESULT App::_TryLoadSettings(const bool saveOnLoad) noexcept
     {
         HRESULT hr = E_FAIL;
 
@@ -514,32 +577,33 @@ namespace winrt::TerminalApp::implementation
         std::filesystem::path fileParser = localPathCopy.c_str();
         const auto folder = fileParser.parent_path();
 
-        _reader.create(folder.c_str(), false, wil::FolderChangeEvents::All,
-            [this](wil::FolderChangeEvent event, PCWSTR fileModified)
-        {
-            // We want file modifications, AND when files are renamed to be
-            // profiles.json. This second case will oftentimes happen with text
-            // editors, who will write a temp file, then rename it to be the
-            // actual file you wrote. So listen for that too.
-            if (!(event == wil::FolderChangeEvent::Modified ||
-                  event == wil::FolderChangeEvent::RenameNewName))
-            {
-                return;
-            }
+        _reader.create(folder.c_str(),
+                       false,
+                       wil::FolderChangeEvents::All,
+                       [this](wil::FolderChangeEvent event, PCWSTR fileModified) {
+                           // We want file modifications, AND when files are renamed to be
+                           // profiles.json. This second case will oftentimes happen with text
+                           // editors, who will write a temp file, then rename it to be the
+                           // actual file you wrote. So listen for that too.
+                           if (!(event == wil::FolderChangeEvent::Modified ||
+                                 event == wil::FolderChangeEvent::RenameNewName))
+                           {
+                               return;
+                           }
 
-            const auto localPathCopy = CascadiaSettings::GetSettingsPath();
-            std::filesystem::path settingsParser = localPathCopy.c_str();
-            std::filesystem::path modifiedParser = fileModified;
+                           const auto localPathCopy = CascadiaSettings::GetSettingsPath();
+                           std::filesystem::path settingsParser = localPathCopy.c_str();
+                           std::filesystem::path modifiedParser = fileModified;
 
-            // Getting basename (filename.ext)
-            const auto settingsBasename = settingsParser.filename();
-            const auto modifiedBasename = modifiedParser.filename();
+                           // Getting basename (filename.ext)
+                           const auto settingsBasename = settingsParser.filename();
+                           const auto modifiedBasename = modifiedParser.filename();
 
-            if (settingsBasename == modifiedBasename)
-            {
-                this->_ReloadSettings();
-            }
-        });
+                           if (settingsBasename == modifiedBasename)
+                           {
+                               this->_ReloadSettings();
+                           }
+                       });
     }
 
     // Method Description:
@@ -574,12 +638,12 @@ namespace winrt::TerminalApp::implementation
         // Refresh UI elements
 
         auto profiles = _settings->GetProfiles();
-        for (auto &profile : profiles)
+        for (auto& profile : profiles)
         {
             const GUID profileGuid = profile.GetGuid();
             TerminalSettings settings = _settings->MakeSettings(profileGuid);
 
-            for (auto &tab : _tabs)
+            for (auto& tab : _tabs)
             {
                 // Attempt to reload the settings of any panes with this profile
                 tab->UpdateSettings(settings, profileGuid);
@@ -600,7 +664,6 @@ namespace winrt::TerminalApp::implementation
             // profile, which might have changed
             _CreateNewTabFlyout();
         });
-
     }
 
     // Method Description:
@@ -673,7 +736,7 @@ namespace winrt::TerminalApp::implementation
         // GH#1117: This is a workaround because _tabView.SelectedIndex(tabIndex)
         //          sometimes set focus to an incorrect tab after removing some tabs
         auto tab = _tabs.at(tabIndex);
-        _tabView.Dispatcher().RunAsync(CoreDispatcherPriority::Normal, [tab, this](){
+        _tabView.Dispatcher().RunAsync(CoreDispatcherPriority::Normal, [tab, this]() {
             auto tabViewItem = tab->GetTabViewItem();
             _tabView.SelectedItem(tabViewItem);
         });
@@ -789,7 +852,7 @@ namespace winrt::TerminalApp::implementation
         // Don't capture a strong ref to the tab. If the tab is removed as this
         // is called, we don't really care anymore about handling the event.
         std::weak_ptr<Tab> weakTabPtr = hostingTab;
-        term.TitleChanged([this, weakTabPtr](auto newTitle){
+        term.TitleChanged([this, weakTabPtr](auto newTitle) {
             auto tab = weakTabPtr.lock();
             if (!tab)
             {
@@ -801,8 +864,7 @@ namespace winrt::TerminalApp::implementation
             _UpdateTitle(tab);
         });
 
-        term.GetControl().GotFocus([this, weakTabPtr](auto&&, auto&&)
-        {
+        term.GetControl().GotFocus([this, weakTabPtr](auto&&, auto&&) {
             auto tab = weakTabPtr.lock();
             if (!tab)
             {
@@ -850,7 +912,7 @@ namespace winrt::TerminalApp::implementation
         tabViewItem.PointerPressed({ this, &App::_OnTabClick });
 
         // When the tab is closed, remove it from our list of tabs.
-        newTab->Closed([tabViewItem, this](){
+        newTab->Closed([tabViewItem, this]() {
             _tabView.Dispatcher().RunAsync(CoreDispatcherPriority::Normal, [tabViewItem, this]() {
                 _RemoveTabViewItem(tabViewItem);
             });
@@ -945,8 +1007,7 @@ namespace winrt::TerminalApp::implementation
         // we clamp the values to the range [0, tabCount) while still supporting moving
         // leftward from 0 to tabCount - 1.
         _SetFocusedTabIndex(
-            static_cast<int>((tabCount + focusedTabIndex + (bMoveRight ? 1 : -1)) % tabCount)
-        );
+            static_cast<int>((tabCount + focusedTabIndex + (bMoveRight ? 1 : -1)) % tabCount));
     }
 
     // Method Description:
@@ -1036,7 +1097,10 @@ namespace winrt::TerminalApp::implementation
             {
                 try
                 {
-                    return _GetFocusedControl().Title();
+                    if (auto focusedControl{ _GetFocusedControl() })
+                    {
+                        return focusedControl.Title();
+                    }
                 }
                 CATCH_LOG();
             }
